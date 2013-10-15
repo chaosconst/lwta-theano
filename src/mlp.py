@@ -157,21 +157,28 @@ class MLP(object):
                                        n_in=n_in, n_out=n_hidden,
                                        n_col_size=n_col_size, activation=Hypercolumn.fprop)
 
+        self.hiddenLayer2 = HiddenLayer(rng=rng, input=self.hiddenLayer.output,
+                                       n_in=n_hidden, n_out=n_hidden,
+                                       n_col_size=n_col_size, activation=Hypercolumn.fprop)
+
+
         # The logistic regression layer gets as input the hidden units
         # of the hidden layer
         self.logRegressionLayer = LogisticRegression(
-            input=self.hiddenLayer.output,
+            input=self.hiddenLayer2.output,
             n_in=n_hidden,
             n_out=n_out)
 
         # L1 norm ; one regularization option is to enforce L1 norm to
         # be small
         self.L1 = abs(self.hiddenLayer.W).sum() \
+                + abs(self.hiddenLayer2.W).sum() \
                 + abs(self.logRegressionLayer.W).sum()
 
         # square of L2 norm ; one regularization option is to enforce
         # square of L2 norm to be small
         self.L2_sqr = (self.hiddenLayer.W ** 2).sum() \
+                    + (self.hiddenLayer2.W ** 2).sum() \
                     + (self.logRegressionLayer.W ** 2).sum()
 
         # negative log likelihood of the MLP is given by the negative
@@ -183,7 +190,7 @@ class MLP(object):
 
         # the parameters of the model are the parameters of the two layer it is
         # made out of
-        self.params = self.hiddenLayer.params + self.logRegressionLayer.params
+        self.params = self.hiddenLayer2.params + self.hiddenLayer.params + self.logRegressionLayer.params
 
 
 def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
