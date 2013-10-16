@@ -43,7 +43,7 @@ class Hypercolumn(object):
     def fprop(self,p):
         w = p.reshape((p.shape[0], p.shape[1] // self.hcol_size, self.hcol_size))
         hcol_max = w.max(axis=2).dimshuffle(0, 1, 'x') * T.ones_like(w)
-        w = w * (w >= hcol_max)
+        w = w * (w >= (hcol_max-0.001))
         w = w.reshape((p.shape[0], p.shape[1]))
         return w
 
@@ -107,7 +107,8 @@ class HiddenLayer(object):
 
         self.W = W
         self.b = b
-        
+        self.max_norm = T.max(self.W ** 2)
+ 
         lin_output = T.dot(input, self.W) + self.b
         self.output = (lin_output if activation is None
                        else activation(lin_output))
@@ -160,26 +161,18 @@ class MLP(object):
         self.hiddenLayer2 = HiddenLayer(rng=rng, input=self.hiddenLayer.output,
                                        n_in=n_hidden, n_out=n_hidden,
                                        n_col_size=n_col_size, activation=Hypercolumn.fprop)
+        
+        self.hiddenLayer3 = HiddenLayer(rng=rng, input=self.hiddenLayer2.output,
+                                       n_in=n_hidden, n_out=n_hidden,
+                                       n_col_size=n_col_size, activation=Hypercolumn.fprop)
 
 
         # The logistic regression layer gets as input the hidden units
         # of the hidden layer
         self.logRegressionLayer = LogisticRegression(
-            input=self.hiddenLayer2.output,
+            input=self.hiddenLayer3.output,
             n_in=n_hidden,
             n_out=n_out)
-
-        # L1 norm ; one regularization option is to enforce L1 norm to
-        # be small
-        self.L1 = abs(self.hiddenLayer.W).sum() \
-                + abs(self.hiddenLayer2.W).sum() \
-                + abs(self.logRegressionLayer.W).sum()
-
-        # square of L2 norm ; one regularization option is to enforce
-        # square of L2 norm to be small
-        self.L2_sqr = (self.hiddenLayer.W ** 2).sum() \
-                    + (self.hiddenLayer2.W ** 2).sum() \
-                    + (self.logRegressionLayer.W ** 2).sum()
 
         # negative log likelihood of the MLP is given by the negative
         # log likelihood of the output of the model, computed in the
@@ -190,11 +183,18 @@ class MLP(object):
 
         # the parameters of the model are the parameters of the two layer it is
         # made out of
-        self.params = self.hiddenLayer2.params + self.hiddenLayer.params + self.logRegressionLayer.params
+        self.params = self.hiddenLayer3.params + self.hiddenLayer2.params + self.hiddenLayer.params + self.logRegressionLayer.params
+        # for every parameter, we maintain it's last update
+        # the idea here is to use "momentum"
+        # keep moving mostly in the same direction
+        self.updates = []
+        for param in self.params:
+            init = numpy.zeros(param.get_value(borrow=True).shape,
+                            dtype=theano.config.floatX)
+            self.updates.append(theano.shared(init))
 
-
-def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
-             dataset='../data/mnist.pkl.gz',n_col_size=4,  batch_size=20, n_hidden=500):
+def test_mlp(learning_rate=0.05, n_epochs=1000, momentum =0.9,
+             dataset='../data/mnist.pkl.gz',n_col_size=2,  batch_size=20, n_hidden=500):
     """
     Demonstrate stochastic gradient descent optimization for a multilayer
     perceptron
@@ -204,14 +204,6 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
     :type learning_rate: float
     :param learning_rate: learning rate used (factor for the stochastic
     gradient
-
-    :type L1_reg: float
-    :param L1_reg: L1-norm's weight when added to the cost (see
-    regularization)
-
-    :type L2_reg: float
-    :param L2_reg: L2-norm's weight when added to the cost (see
-    regularization)
 
     :type n_epochs: int
     :param n_epochs: maximal number of epochs to run the optimizer
@@ -251,11 +243,9 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
                      n_col_size=n_col_size, n_hidden=n_hidden, n_out=10)
 
     # the cost we minimize during training is the negative log likelihood of
-    # the model plus the regularization terms (L1 and L2); cost is expressed
+    # cost is expressed
     # here symbolically
-    cost = classifier.negative_log_likelihood(y) \
-         + L1_reg * classifier.L1 \
-         + L2_reg * classifier.L2_sqr
+    cost = classifier.negative_log_likelihood(y)
 
     # compiling a Theano function that computes the mistakes that are made
     # by the model on a minibatch
@@ -280,17 +270,25 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
 
     # specify how to update the parameters of the model as a list of
     # (variable, update expression) pairs
-    updates = []
     # given two list the zip A = [a1, a2, a3, a4] and B = [b1, b2, b3, b4] of
     # same length, zip generates a list C of same size, where each element
     # is a pair formed from the two lists :
     #    C = [(a1, b1), (a2, b2), (a3, b3), (a4, b4)]
-    for param, gparam in zip(classifier.params, gparams):
-        updates.append((param, param - learning_rate * gparam))
+    updates = []
+    for param, gparam, weight_update in zip(classifier.params, gparams, classifier.updates):
+        upd = momentum * weight_update - (1-momentum) * learning_rate * gparam
+        updates.append((weight_update, upd))
+        updates.append((param, param + upd))
 
     # compiling a Theano function `train_model` that returns the cost, but
     # in the same time updates the parameter of the model based on the rules
     # defined in `updates`
+    train_model = theano.function(inputs=[index], outputs=cost,
+            updates=updates,
+            givens={
+                x: train_set_x[index * batch_size:(index + 1) * batch_size],
+                y: train_set_y[index * batch_size:(index + 1) * batch_size]})
+
     train_model = theano.function(inputs=[index], outputs=cost,
             updates=updates,
             givens={
@@ -324,6 +322,10 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
     done_looping = False
 
     while (epoch < n_epochs) and (not done_looping):
+        momentum = momentum + 0.0005
+        if learning_rate>0.01: learning_rate *= 0.95
+
+        
         epoch = epoch + 1
         for minibatch_index in xrange(n_train_batches):
 
@@ -340,7 +342,12 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
                 print('epoch %i, minibatch %i/%i, validation error %f %%' %
                      (epoch, minibatch_index + 1, n_train_batches,
                       this_validation_loss * 100.))
-
+	        print '\tlayer1 max weight norm='+str(classifier.hiddenLayer.max_norm.eval());
+	        print '\tlayer2 max weight norm='+str(classifier.hiddenLayer2.max_norm.eval());
+	        print '\tlayer3 max weight norm='+str(classifier.hiddenLayer3.max_norm.eval());
+            
+                minibatch_avg_cost = train_model(minibatch_index)
+                
                 # if we got the best validation score until now
                 if this_validation_loss < best_validation_loss:
                     #improve patience if loss improvement is good enough
@@ -357,9 +364,9 @@ def test_mlp(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
                     test_score = numpy.mean(test_losses)
 
                     print(('     epoch %i, minibatch %i/%i, test error of '
-                           'best model %f %%') %
+                           'best model %f %%, learning rate=%f') %
                           (epoch, minibatch_index + 1, n_train_batches,
-                           test_score * 100.))
+                           test_score * 100., learning_rate))
 
             if patience <= iter:
                     done_looping = True
