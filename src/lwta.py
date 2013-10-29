@@ -1,0 +1,421 @@
+"""
+This tutorial introduces the multilayer perceptron using Theano.
+
+ A multilayer perceptron is a logistic regressor where
+instead of feeding the input to the logistic regression you insert a
+intermediate layer, called the hidden layer, that has a nonlinear
+activation function (usually tanh or sigmoid) . One can use many such
+hidden layers making the architecture deep. The tutorial will also tackle
+the problem of MNIST digit classification.
+
+.. math::
+
+    f(x) = G( b^{(2)} + W^{(2)}( s( b^{(1)} + W^{(1)} x))),
+
+References:
+
+    - textbooks: "Pattern Recognition and Machine Learning" -
+                 Christopher M. Bishop, section 5
+
+"""
+__docformat__ = 'restructedtext en'
+
+
+import cPickle
+import gzip
+import os
+import sys
+import time
+
+import numpy
+
+import theano
+import theano.tensor as T
+
+
+from logistic_sgd import LogisticRegression, load_data
+
+class Hypercolumn(object):
+    def __init__(self, hcol_size, **kwargs):
+        super(Hypercolumn, self).__init__(**kwargs)
+        self.hcol_size = hcol_size
+
+    def fprop(self,p):
+        w = p.reshape((p.shape[0], p.shape[1] // self.hcol_size, self.hcol_size))
+        hcol_max = w.max(axis=2).dimshuffle(0, 1, 'x') * T.ones_like(w)
+        w = w * (w >= (hcol_max-0.001))
+        w = w.reshape((p.shape[0], p.shape[1]))
+        return w
+
+class HiddenLayer(object):
+    def __init__(self, rng, input, n_in, n_out, n_col_size, W=None, b=None,
+                 activation=Hypercolumn.fprop):
+        """
+        Typical hidden layer of a MLP: units are fully-connected and have
+        sigmoidal activation function. Weight matrix W is of shape (n_in,n_out)
+        and the bias vector b is of shape (n_out,).
+
+        NOTE : The nonlinearity used here is tanh
+
+        Hidden unit activation is given by: tanh(dot(input,W) + b)
+
+        :type rng: numpy.random.RandomState
+        :param rng: a random number generator used to initialize weights
+
+        :type input: theano.tensor.dmatrix
+        :param input: a symbolic tensor of shape (n_examples, n_in)
+
+        :type n_in: int
+        :param n_in: dimensionality of input
+
+        :type n_out: int
+        :param n_out: number of hidden units
+
+        :type activation: theano.Op or function
+        :param activation: Non linearity to be applied in the hidden
+                           layer
+        """
+        self.input = input
+        hc = Hypercolumn(n_col_size);
+        activation = hc.fprop;
+
+        # `W` is initialized with `W_values` which is uniformely sampled
+        # from sqrt(-6./(n_in+n_hidden)) and sqrt(6./(n_in+n_hidden))
+        # for tanh activation function
+        # the output of uniform if converted using asarray to dtype
+        # theano.config.floatX so that the code is runable on GPU
+        # Note : optimal initialization of weights is dependent on the
+        #        activation function used (among other things).
+        #        For example, results presented in [Xavier10] suggest that you
+        #        should use 4 times larger initial weights for sigmoid
+        #        compared to tanh
+        #        We have no info for other function, so we use the same as
+        #        tanh.
+        if W is None:
+            W_values = numpy.asarray(rng.uniform(
+                    low=-numpy.sqrt(6. / (n_in + n_out)),
+                    high=numpy.sqrt(6. / (n_in + n_out)),
+                    size=(n_in, n_out)), dtype=theano.config.floatX)
+            if activation == theano.tensor.nnet.sigmoid:
+                W_values *= 4
+
+            W = theano.shared(value=W_values, name='W', borrow=True)
+
+        if b is None:
+            b_values = numpy.zeros((n_out,), dtype=theano.config.floatX)
+            b = theano.shared(value=b_values, name='b', borrow=True)
+
+        self.W = W
+        self.b = b
+
+        sq_W = T.sqr(W)
+        col_norms = T.sqrt(sq_W.sum(axis=0))
+        self.max_norm = col_norms.max()
+        self.mean_norm = col_norms.mean()
+        self.min_norm = col_norms.min()
+ 
+        lin_output = T.dot(input, self.W) + self.b
+        self.output = (lin_output if activation is None
+                       else activation(lin_output))
+        # parameters of the model
+        self.params = [self.W, self.b]
+
+
+class MLP(object):
+    """Multi-Layer Perceptron Class
+
+    A multilayer perceptron is a feedforward artificial neural network model
+    that has one layer or more of hidden units and nonlinear activations.
+    Intermediate layers usually have as activation function thanh or the
+    sigmoid function (defined here by a ``SigmoidalLayer`` class)  while the
+    top layer is a softamx layer (defined here by a ``LogisticRegression``
+    class).
+    """
+
+    def __init__(self, rng, input, n_in, n_hidden, n_out, n_col_size):
+        """Initialize the parameters for the multilayer perceptron
+
+        :type rng: numpy.random.RandomState
+        :param rng: a random number generator used to initialize weights
+
+        :type input: theano.tensor.TensorType
+        :param input: symbolic variable that describes the input of the
+        architecture (one minibatch)
+
+        :type n_in: int
+        :param n_in: number of input units, the dimension of the space in
+        which the datapoints lie
+
+        :type n_hidden: int
+        :param n_hidden: number of hidden units
+
+        :type n_out: int
+        :param n_out: number of output units, the dimension of the space in
+        which the labels lie
+
+        """
+
+        # Since we are dealing with a one hidden layer MLP, this will
+        # translate into a TanhLayer connected to the LogisticRegression
+        # layer; this can be replaced by a SigmoidalLayer, or a layer
+        # implementing any other nonlinearity
+        self.hiddenLayer = HiddenLayer(rng=rng, input=input,
+                                       n_in=n_in, n_out=n_hidden,
+                                       n_col_size=n_col_size, activation=Hypercolumn.fprop)
+
+        self.hiddenLayer2 = HiddenLayer(rng=rng, input=self.hiddenLayer.output,
+                                       n_in=n_hidden, n_out=n_hidden,
+                                       n_col_size=n_col_size, activation=Hypercolumn.fprop)
+        
+        self.hiddenLayer3 = HiddenLayer(rng=rng, input=self.hiddenLayer2.output,
+                                       n_in=n_hidden, n_out=n_hidden,
+                                       n_col_size=n_col_size, activation=Hypercolumn.fprop)
+
+
+        # The logistic regression layer gets as input the hidden units
+        # of the hidden layer
+        self.logRegressionLayer = LogisticRegression(
+            input=self.hiddenLayer3.output,
+            n_in=n_hidden,
+            n_out=n_out)
+
+        # negative log likelihood of the MLP is given by the negative
+        # log likelihood of the output of the model, computed in the
+        # logistic regression layer
+        self.negative_log_likelihood = self.logRegressionLayer.negative_log_likelihood
+        # same holds for the function computing the number of errors
+        self.errors = self.logRegressionLayer.errors
+
+        # the parameters of the model are the parameters of the two layer it is
+        # made out of
+        self.params = self.hiddenLayer3.params + self.hiddenLayer2.params + self.hiddenLayer.params + self.logRegressionLayer.params
+        
+        # for every parameter, we maintain it's last update
+        # the idea here is to use "momentum"
+        # keep moving mostly in the same direction
+        self.updates = []
+        self.gparams = []
+        for param in self.params:
+            init = numpy.zeros(param.get_value(borrow=True).shape,
+                            dtype=theano.config.floatX)
+            self.updates.append(theano.shared(init))
+            
+            init = numpy.zeros(param.get_value(borrow=True).shape,
+                            dtype=theano.config.floatX)
+            self.gparams.append(theano.shared(init))
+
+def test_mlp(learning_rate=0.05, n_epochs=1000, momentum =0.9,
+             dataset='../data/mnist.pkl.gz',n_col_size=2,  batch_size=20, n_hidden=500):
+    """
+    Demonstrate stochastic gradient descent optimization for a multilayer
+    perceptron
+
+    This is demonstrated on MNIST.
+
+    :type learning_rate: float
+    :param learning_rate: learning rate used (factor for the stochastic
+    gradient
+
+    :type n_epochs: int
+    :param n_epochs: maximal number of epochs to run the optimizer
+
+    :type dataset: string
+    :param dataset: the path of the MNIST dataset file from
+                 http://www.iro.umontreal.ca/~lisa/deep/data/mnist/mnist.pkl.gz
+
+
+   """
+    datasets = load_data(dataset)
+
+    train_set_x, train_set_y = datasets[0]
+    valid_set_x, valid_set_y = datasets[1]
+    test_set_x, test_set_y = datasets[2]
+
+    # compute number of minibatches for training, validation and testing
+    n_train_batches = train_set_x.get_value(borrow=True).shape[0] / batch_size
+    n_valid_batches = valid_set_x.get_value(borrow=True).shape[0] / batch_size
+    n_test_batches = test_set_x.get_value(borrow=True).shape[0] / batch_size
+
+    ######################
+    # BUILD ACTUAL MODEL #
+    ######################
+    print '... building the model'
+
+    # allocate symbolic variables for the data
+    index = T.lscalar()  # index to a [mini]batch
+    x = T.matrix('x')  # the data is presented as rasterized images
+    y = T.ivector('y')  # the labels are presented as 1D vector of
+                        # [int] labels
+
+    rng = numpy.random.RandomState()
+
+    # construct the MLP class
+    classifier = MLP(rng=rng, input=x, n_in=28 * 28,
+                     n_col_size=n_col_size, n_hidden=n_hidden, n_out=10)
+
+    # the cost we minimize during training is the negative log likelihood of
+    # cost is expressed
+    # here symbolically
+    cost = classifier.negative_log_likelihood(y)
+
+    # compiling a Theano function that computes the mistakes that are made
+    # by the model on a minibatch
+    test_model = theano.function(inputs=[index],
+            outputs=classifier.errors(y),
+            givens={
+                x: test_set_x[index * batch_size:(index + 1) * batch_size],
+                y: test_set_y[index * batch_size:(index + 1) * batch_size]})
+
+    validate_model = theano.function(inputs=[index],
+            outputs=classifier.errors(y),
+            givens={
+                x: valid_set_x[index * batch_size:(index + 1) * batch_size],
+                y: valid_set_y[index * batch_size:(index + 1) * batch_size]})
+
+    # compute the gradient of cost with respect to theta (sotred in params)
+    # the resulting gradients will be stored in a list gparams
+    gparams = []
+    for param in classifier.params:
+        gparam = T.grad(cost, param)
+        gparams.append(gparam)
+
+    # specify how to update the parameters of the model as a list of
+    # (variable, update expression) pairs
+    # given two list the zip A = [a1, a2, a3, a4] and B = [b1, b2, b3, b4] of
+    # same length, zip generates a list C of same size, where each element
+    # is a pair formed from the two lists :
+    #    C = [(a1, b1), (a2, b2), (a3, b3), (a4, b4)]
+    updates = []
+    for param, gparam, weight_update, gsave in zip(classifier.params, gparams, classifier.updates, classifier.gparams):
+        upd = momentum * weight_update - (1-momentum) * learning_rate * gparam
+        updates.append((gsave, gparam))
+        updates.append((weight_update, upd))
+        updates.append((param, param + upd))
+
+    # compiling a Theano function `train_model` that returns the cost, but
+    # in the same time updates the parameter of the model based on the rules
+    # defined in `updates`
+    train_model = theano.function(inputs=[index], outputs=cost,
+            updates=updates,
+            givens={
+                x: train_set_x[index * batch_size:(index + 1) * batch_size],
+                y: train_set_y[index * batch_size:(index + 1) * batch_size]})
+
+    train_model = theano.function(inputs=[index], outputs=cost,
+            updates=updates,
+            givens={
+                x: train_set_x[index * batch_size:(index + 1) * batch_size],
+                y: train_set_y[index * batch_size:(index + 1) * batch_size]})
+
+    ###############
+    # TRAIN MODEL #
+    ###############
+    print '... training'
+
+    # early-stopping parameters
+    patience = 10000  # look as this many examples regardless
+    patience_increase = 2  # wait this much longer when a new best is
+                           # found
+    improvement_threshold = 0.995  # a relative improvement of this much is
+                                   # considered significant
+    validation_frequency = min(n_train_batches, patience / 2)
+                                  # go through this many
+                                  # minibatche before checking the network
+                                  # on the validation set; in this case we
+                                  # check every epoch
+
+    best_params = None
+    best_validation_loss = numpy.inf
+    best_iter = 0
+    test_score = 0.
+    start_time = time.clock()
+
+    epoch = 0
+    done_looping = False
+                    
+    f = open("run_log","w+");
+
+    while (epoch < n_epochs) and (not done_looping):
+        momentum = momentum + 0.0005
+        if learning_rate>0.001: learning_rate *= 0.95
+
+        
+        epoch = epoch + 1
+        for minibatch_index in xrange(n_train_batches):
+
+            minibatch_avg_cost = train_model(minibatch_index)
+            # iteration number
+            iter = (epoch - 1) * n_train_batches + minibatch_index
+
+            if (iter + 1) % validation_frequency == 0:
+                # compute zero-one loss on validation set
+                validation_losses = [validate_model(i) for i
+                                     in xrange(n_valid_batches)]
+                this_validation_loss = numpy.mean(validation_losses)
+
+                print('epoch %i, minibatch %i/%i, validation error %f %%, learning_rate=%f' %
+                     (epoch, minibatch_index + 1, n_train_batches,
+                      this_validation_loss * 100., learning_rate))
+
+                print "debug information:" 
+                print "avg(abs(delta W)) in four levels:" 
+                print numpy.mean(numpy.abs(classifier.updates[0].eval()));
+                print numpy.mean(numpy.abs(classifier.updates[2].eval()));
+                print numpy.mean(numpy.abs(classifier.updates[4].eval()));
+                print numpy.mean(numpy.abs(classifier.updates[6].eval()));
+                print "avg(abs(grad(cost,W)) in four levels:" 
+                print numpy.mean(numpy.abs(classifier.gparams[0].eval()));
+                print numpy.mean(numpy.abs(classifier.gparams[2].eval()));
+                print numpy.mean(numpy.abs(classifier.gparams[4].eval()));
+                print numpy.mean(numpy.abs(classifier.gparams[6].eval()));
+
+                print ;
+                print '\tlayer1 max weight norm='+str(classifier.hiddenLayer.max_norm.eval());
+                print '\tlayer1 mean weight norm='+str(classifier.hiddenLayer.mean_norm.eval());
+                print '\tlayer1 min weight norm='+str(classifier.hiddenLayer.min_norm.eval());
+                print '\tlayer2 max weight norm='+str(classifier.hiddenLayer2.max_norm.eval());
+                print '\tlayer2 mean weight norm='+str(classifier.hiddenLayer2.mean_norm.eval());
+                print '\tlayer2 min weight norm='+str(classifier.hiddenLayer2.min_norm.eval());
+                print '\tlayer3 max weight norm='+str(classifier.hiddenLayer3.max_norm.eval());
+                print '\tlayer3 mean weight norm='+str(classifier.hiddenLayer3.mean_norm.eval());
+                print '\tlayer3 min weight norm='+str(classifier.hiddenLayer3.min_norm.eval());
+
+                print ;
+
+                minibatch_avg_cost = train_model(minibatch_index)
+                
+                # if we got the best validation score until now
+                if this_validation_loss < best_validation_loss:
+                    #improve patience if loss improvement is good enough
+                    if this_validation_loss < best_validation_loss *  \
+                           improvement_threshold:
+                        patience = max(patience, iter * patience_increase)
+
+                    best_validation_loss = this_validation_loss
+                    best_iter = iter
+
+                    # test it on the test set
+                    test_losses = [test_model(i) for i
+                                   in xrange(n_test_batches)]
+                    test_score = numpy.mean(test_losses)
+
+                    print(('     epoch %i, minibatch %i/%i, test error of '
+                           'best model %f %%, learning rate=%f') %
+                          (epoch, minibatch_index + 1, n_train_batches,
+                           test_score * 100., learning_rate))
+
+            if patience <= iter:
+                    done_looping = True
+                    break
+
+    end_time = time.clock()
+    print(('Optimization complete. Best validation score of %f %% '
+           'obtained at iteration %i, with test performance %f %%') %
+          (best_validation_loss * 100., best_iter + 1, test_score * 100.))
+    print >> sys.stderr, ('The code for file ' +
+                          os.path.split(__file__)[1] +
+                          ' ran for %.2fm' % ((end_time - start_time) / 60.))
+
+
+if __name__ == '__main__':
+    test_mlp()
