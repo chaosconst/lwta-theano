@@ -359,26 +359,25 @@ def test_mlp(learning_rate=0.05, n_epochs=1000, momentum =0.9,
 
                 print "debug information:" 
                 print "avg(abs(delta W)) in four levels:" 
-                print numpy.mean(numpy.abs(classifier.updates[0].eval()));
-                print numpy.mean(numpy.abs(classifier.updates[2].eval()));
-                print numpy.mean(numpy.abs(classifier.updates[4].eval()));
-                print numpy.mean(numpy.abs(classifier.updates[6].eval()));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.updates[0].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.updates[2].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.updates[4].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.updates[6].eval())));
                 print "avg(abs(grad(cost,W)) in four levels:" 
-                print numpy.mean(numpy.abs(classifier.gparams[0].eval()));
-                print numpy.mean(numpy.abs(classifier.gparams[2].eval()));
-                print numpy.mean(numpy.abs(classifier.gparams[4].eval()));
-                print numpy.mean(numpy.abs(classifier.gparams[6].eval()));
-
-                print ;
-                print '\tlayer1 max weight norm='+str(classifier.hiddenLayer.max_norm.eval());
-                print '\tlayer1 mean weight norm='+str(classifier.hiddenLayer.mean_norm.eval());
-                print '\tlayer1 min weight norm='+str(classifier.hiddenLayer.min_norm.eval());
-                print '\tlayer2 max weight norm='+str(classifier.hiddenLayer2.max_norm.eval());
-                print '\tlayer2 mean weight norm='+str(classifier.hiddenLayer2.mean_norm.eval());
-                print '\tlayer2 min weight norm='+str(classifier.hiddenLayer2.min_norm.eval());
-                print '\tlayer3 max weight norm='+str(classifier.hiddenLayer3.max_norm.eval());
-                print '\tlayer3 mean weight norm='+str(classifier.hiddenLayer3.mean_norm.eval());
-                print '\tlayer3 min weight norm='+str(classifier.hiddenLayer3.min_norm.eval());
+                print '\t'+str(numpy.mean(numpy.abs(classifier.gparams[0].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.gparams[2].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.gparams[4].eval())));
+                print '\t'+str(numpy.mean(numpy.abs(classifier.gparams[6].eval())));
+                print "about W norm:" 
+                print '\tlayer1 max weight norm  = '+str(classifier.hiddenLayer.max_norm.eval());
+                print '\tlayer1 mean weight norm = '+str(classifier.hiddenLayer.mean_norm.eval());
+                print '\tlayer1 min weight norm  = '+str(classifier.hiddenLayer.min_norm.eval());
+                print '\tlayer2 max weight norm  = '+str(classifier.hiddenLayer2.max_norm.eval());
+                print '\tlayer2 mean weight norm = '+str(classifier.hiddenLayer2.mean_norm.eval());
+                print '\tlayer2 min weight norm  = '+str(classifier.hiddenLayer2.min_norm.eval());
+                print '\tlayer3 max weight norm  = '+str(classifier.hiddenLayer3.max_norm.eval());
+                print '\tlayer3 mean weight norm = '+str(classifier.hiddenLayer3.mean_norm.eval());
+                print '\tlayer3 min weight norm  = '+str(classifier.hiddenLayer3.min_norm.eval());
 
                 print ;
 
